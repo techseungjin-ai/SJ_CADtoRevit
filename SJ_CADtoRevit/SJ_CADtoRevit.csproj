@@ -35,7 +35,7 @@
   </ItemGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="xcopy &quot;$(ProjectDir)SJ_CADtoRevit.bundle\*&quot; &quot;$(APPDATA)\Autodesk\ApplicationPlugins\SJ_CADtoRevit.bundle\&quot; /E /Y /I" />
+    <Exec Command="xcopy &quot;$(ProjectDir)SJ_CADtoRevit.bundle\*&quot; &quot;$(APPDATA)\Autodesk\ApplicationPlugins\SJ_CADtoRevit.bundle\&quot; /E /Y /I /C || exit 0" />
   </Target>
 
 </Project>

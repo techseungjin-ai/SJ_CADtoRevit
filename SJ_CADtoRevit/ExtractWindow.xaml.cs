@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
@@ -42,6 +43,57 @@ namespace SJ_CADtoRevit
     {
         private ObservableCollection<BoundaryItem> _boundaryItems = new ObservableCollection<BoundaryItem>();
         private ObjectId _referenceBoundaryId = ObjectId.Null;
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            HwndSource? hwndSource = PresentationSource.FromVisual(this) as HwndSource;
+            if (hwndSource != null)
+            {
+                hwndSource.AddHook(HwndSourceHook);
+            }
+        }
+
+        private const int WM_NCHITTEST = 0x0084;
+        private const int HTLEFT = 10;
+        private const int HTRIGHT = 11;
+        private const int HTTOP = 12;
+        private const int HTTOPLEFT = 13;
+        private const int HTTOPRIGHT = 14;
+        private const int HTBOTTOM = 15;
+        private const int HTBOTTOMLEFT = 16;
+        private const int HTBOTTOMRIGHT = 17;
+
+        private IntPtr HwndSourceHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == WM_NCHITTEST)
+            {
+                int x = lParam.ToInt32() & 0xffff;
+                int y = lParam.ToInt32() >> 16;
+
+                try
+                {
+                    Point clientPoint = this.PointFromScreen(new Point(x, y));
+
+                    double borderWidth = 7; // 마우스 감지 테두리 너비
+                    bool isLeft = clientPoint.X <= borderWidth;
+                    bool isRight = clientPoint.X >= this.ActualWidth - borderWidth;
+                    bool isTop = clientPoint.Y <= borderWidth;
+                    bool isBottom = clientPoint.Y >= this.ActualHeight - borderWidth;
+
+                    if (isTop && isLeft) { handled = true; return new IntPtr(HTTOPLEFT); }
+                    if (isTop && isRight) { handled = true; return new IntPtr(HTTOPRIGHT); }
+                    if (isBottom && isLeft) { handled = true; return new IntPtr(HTBOTTOMLEFT); }
+                    if (isBottom && isRight) { handled = true; return new IntPtr(HTBOTTOMRIGHT); }
+                    if (isLeft) { handled = true; return new IntPtr(HTLEFT); }
+                    if (isRight) { handled = true; return new IntPtr(HTRIGHT); }
+                    if (isTop) { handled = true; return new IntPtr(HTTOP); }
+                    if (isBottom) { handled = true; return new IntPtr(HTBOTTOM); }
+                }
+                catch { }
+            }
+            return IntPtr.Zero;
+        }
 
         public ExtractWindow()
         {
