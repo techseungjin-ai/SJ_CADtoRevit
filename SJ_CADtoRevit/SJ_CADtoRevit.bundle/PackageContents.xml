@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0" 
+                    AppVersion="1.0.0" 
+                    Author="BIM Engineer" 
+                    ProductCode="{9E1A7D42-9214-4C5C-A778-F3C2C650A20F}" 
+                    Name="SJ_CADtoRevit" 
+                    Description="Crop and trim drawings for clean Revit transition" 
+                    FriendlyName="SJ_CADtoRevit">
+  <CompanyDetails Name="BIM Engineer" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R25.0" />
+    <ComponentEntry AppName="SJ_CADtoRevit" 
+                    ModuleName="./Contents/SJ_CADtoRevit.dll" 
+                    AppDescription="Crop and trim drawings for clean Revit transition" 
+                    LoadOnAutoCADStartup="True">
+      <Commands GroupName="SJ_GROUP">
+        <Command Local="SJ_CROP_TRIM" Global="SJ_CROP_TRIM" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

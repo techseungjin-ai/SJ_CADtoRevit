@@ -1,0 +1,17 @@
+﻿# 빌드 및 IDE 임시 파일 제외
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# AutoCAD 플러그인 빌드 번들 내 임시파일
+SJ_CADtoRevit/SJ_CADtoRevit.bundle/Contents/*.pdb
+SJ_CADtoRevit/SJ_CADtoRevit.bundle/Contents/*.deps.json
+
+# 패키징 임시 파일
+*.7z
+*.exe
+config.txt
