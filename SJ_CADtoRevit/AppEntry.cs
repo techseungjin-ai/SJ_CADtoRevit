@@ -76,6 +76,9 @@ namespace SJ_CADtoRevit
                 };
                 tab.Panels.Add(panel);
 
+                var cropImage = LoadImageSource("crop.png");
+                var extractImage = LoadImageSource("extract.png");
+
                 // Create Ribbon Button 1: Crop & Clean
                 RibbonButton btnCrop = new RibbonButton
                 {
@@ -84,7 +87,9 @@ namespace SJ_CADtoRevit
                     Size = RibbonItemSize.Large,
                     Orientation = System.Windows.Controls.Orientation.Vertical,
                     CommandParameter = "SJ_CROP_TRIM ",
-                    CommandHandler = new RibbonCommandHandler()
+                    CommandHandler = new RibbonCommandHandler(),
+                    Image = cropImage,
+                    LargeImage = cropImage
                 };
 
                 RibbonToolTip toolTipCrop = new RibbonToolTip
@@ -102,7 +107,9 @@ namespace SJ_CADtoRevit
                     Size = RibbonItemSize.Large,
                     Orientation = System.Windows.Controls.Orientation.Vertical,
                     CommandParameter = "SJ_EXTRACT_DWG ",
-                    CommandHandler = new RibbonCommandHandler()
+                    CommandHandler = new RibbonCommandHandler(),
+                    Image = extractImage,
+                    LargeImage = extractImage
                 };
 
                 RibbonToolTip toolTipExtract = new RibbonToolTip
@@ -123,6 +130,53 @@ namespace SJ_CADtoRevit
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 doc?.Editor.WriteMessage($"\n[SJ_CADtoRevit] 리본 생성 오류: {ex.Message}");
             }
+        }
+
+        private static System.Windows.Media.ImageSource? LoadImageSource(string fileName)
+        {
+            try
+            {
+                // Try to find the image in standard Autoloader installation directories first to bypass shadow-copying
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string userPath = System.IO.Path.Combine(appData, "Autodesk", "ApplicationPlugins", "SJ_CADtoRevit.bundle", "Contents", fileName);
+                
+                string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                string machinePath = System.IO.Path.Combine(programData, "Autodesk", "ApplicationPlugins", "SJ_CADtoRevit.bundle", "Contents", fileName);
+
+                string imagePath = "";
+                if (System.IO.File.Exists(userPath))
+                {
+                    imagePath = userPath;
+                }
+                else if (System.IO.File.Exists(machinePath))
+                {
+                    imagePath = machinePath;
+                }
+                else
+                {
+                    // Fallback to DLL directory
+                    string dllPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                    string dllDir = System.IO.Path.GetDirectoryName(dllPath) ?? "";
+                    string fallbackPath = System.IO.Path.Combine(dllDir, fileName);
+                    if (System.IO.File.Exists(fallbackPath))
+                    {
+                        imagePath = fallbackPath;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(imagePath))
+                {
+                    System.Windows.Media.Imaging.BitmapImage bmp = new System.Windows.Media.Imaging.BitmapImage();
+                    bmp.BeginInit();
+                    string uriPath = "file:///" + imagePath.Replace('\\', '/');
+                    bmp.UriSource = new Uri(uriPath, UriKind.Absolute);
+                    bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    bmp.EndInit();
+                    return bmp;
+                }
+            }
+            catch { }
+            return null;
         }
 
         /// <summary>

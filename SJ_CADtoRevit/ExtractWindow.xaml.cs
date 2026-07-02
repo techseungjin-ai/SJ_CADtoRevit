@@ -5,10 +5,12 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.GraphicsInterface;
 using Application = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace SJ_CADtoRevit
@@ -107,6 +109,7 @@ namespace SJ_CADtoRevit
         protected override void OnClosed(EventArgs e)
         {
             DrawingTrimmer.OnLog -= DrawingTrimmer_OnLog;
+            ClearActiveTransient();
             base.OnClosed(e);
         }
 
@@ -339,6 +342,7 @@ namespace SJ_CADtoRevit
                 }
                 tr.Commit();
             }
+            SortBoundaryItems();
         }
 
         private void lstBoundaries_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -349,18 +353,34 @@ namespace SJ_CADtoRevit
                 if (doc == null) return;
                 Editor ed = doc.Editor;
 
-                // Zoom to the selected boundary
+                // CRITICAL FIX: Prevent crash if the user changed the active document
+                if (!selectedItem.Id.IsValid || selectedItem.Id.Database != doc.Database || selectedItem.Id.IsErased)
+                {
+                    ClearActiveTransient();
+                    return;
+                }
+
+                // Zoom to the selected boundary and draw dynamic transient text badge
                 using (doc.LockDocument())
                 {
                     ZoomToExtents(ed, selectedItem.Extents);
+                    ShowTransientBadge(selectedItem.Extents, selectedItem.Index.ToString());
                 }
 
                 // Highlight this specific boundary
                 try
                 {
                     ed.SetImpliedSelection(new ObjectId[] { selectedItem.Id });
+                    ed.UpdateScreen(); // Force immediate display update
+                    
+                    // Force window focus to refresh selection grips immediately
+                    Application.DocumentManager.MdiActiveDocument.Window.Focus();
                 }
                 catch { }
+            }
+            else
+            {
+                ClearActiveTransient();
             }
         }
 
@@ -370,6 +390,13 @@ namespace SJ_CADtoRevit
             {
                 using (ViewTableRecord view = ed.GetCurrentView())
                 {
+                    // WCS to DCS coordinate conversion matrix
+                    Matrix3d wto = (Matrix3d.Rotation(-view.ViewTwist, view.ViewDirection, view.Target) *
+                                    Matrix3d.Displacement(view.Target - Point3d.Origin) *
+                                    Matrix3d.PlaneToWorld(view.ViewDirection)).Inverse();
+
+                    ext.TransformBy(wto);
+
                     double width = ext.MaxPoint.X - ext.MinPoint.X;
                     double height = ext.MaxPoint.Y - ext.MinPoint.Y;
                     Point2d center = new Point2d(ext.MinPoint.X + width / 2.0, ext.MinPoint.Y + height / 2.0);
@@ -388,25 +415,217 @@ namespace SJ_CADtoRevit
             }
         }
 
+        private MText? _activeTransientText = null;
+
+        private void ClearActiveTransient()
+        {
+            if (_activeTransientText != null)
+            {
+                try
+                {
+                    TransientManager.CurrentTransientManager.EraseTransient(_activeTransientText, new IntegerCollection());
+                    _activeTransientText.Dispose();
+                }
+                catch { }
+                _activeTransientText = null;
+            }
+        }
+
+        private void ShowTransientBadge(Extents3d ext, string text)
+        {
+            ClearActiveTransient();
+            try
+            {
+                double width = ext.MaxPoint.X - ext.MinPoint.X;
+                double height = ext.MaxPoint.Y - ext.MinPoint.Y;
+                double size = height * 0.08; // 8% of boundary height
+
+                // Position badge inside the top-left corner
+                Point3d badgePos = new Point3d(
+                    ext.MinPoint.X + width * 0.02, 
+                    ext.MaxPoint.Y - height * 0.08, 
+                    ext.MinPoint.Z
+                );
+
+                MText txt = new MText
+                {
+                    Contents = text,
+                    Location = badgePos,
+                    TextHeight = size,
+                    ColorIndex = 2 // Yellow
+                };
+
+                TransientManager.CurrentTransientManager.AddTransient(txt, TransientDrawingMode.DirectTopmost, 128, new IntegerCollection());
+                _activeTransientText = txt;
+            }
+            catch { }
+        }
+
+        private void cmbSortOrder_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            SortBoundaryItems();
+        }
+
+        private void SortBoundaryItems()
+        {
+            if (_boundaryItems.Count <= 1) return;
+
+            string sortTag = "LeftToRight";
+            if (cmbSortOrder?.SelectedItem is System.Windows.Controls.ComboBoxItem item && item.Tag != null)
+            {
+                sortTag = item.Tag.ToString()!;
+            }
+
+            List<BoundaryItem> items = new List<BoundaryItem>(_boundaryItems);
+            List<BoundaryItem> sortedList = new List<BoundaryItem>();
+
+            // Calculate average size for clustering tolerance
+            double avgHeight = items.Average(i => i.Extents.MaxPoint.Y - i.Extents.MinPoint.Y);
+            double avgWidth = items.Average(i => i.Extents.MaxPoint.X - i.Extents.MinPoint.X);
+            double yTolerance = avgHeight * 0.5;
+            double xTolerance = avgWidth * 0.5;
+
+            if (sortTag == "LeftToRight" || sortTag == "RightToLeft")
+            {
+                // Group by Rows (Top-to-Bottom, then horizontal sort)
+                // 1. Sort all items by Y center descending (top-to-bottom)
+                var ySorted = items.OrderByDescending(i => i.Extents.MinPoint.Y + (i.Extents.MaxPoint.Y - i.Extents.MinPoint.Y) / 2.0).ToList();
+
+                List<List<BoundaryItem>> rows = new List<List<BoundaryItem>>();
+                foreach (var itemNode in ySorted)
+                {
+                    double itemY = itemNode.Extents.MinPoint.Y + (itemNode.Extents.MaxPoint.Y - itemNode.Extents.MinPoint.Y) / 2.0;
+                    bool added = false;
+                    foreach (var row in rows)
+                    {
+                        double rowY = row[0].Extents.MinPoint.Y + (row[0].Extents.MaxPoint.Y - row[0].Extents.MinPoint.Y) / 2.0;
+                        if (Math.Abs(rowY - itemY) < yTolerance)
+                        {
+                            row.Add(itemNode);
+                            added = true;
+                            break;
+                        }
+                    }
+                    if (!added)
+                    {
+                        rows.Add(new List<BoundaryItem> { itemNode });
+                    }
+                }
+
+                // Sort each row and concatenate
+                foreach (var row in rows)
+                {
+                    var sortedRow = (sortTag == "LeftToRight")
+                        ? row.OrderBy(i => i.Extents.MinPoint.X + (i.Extents.MaxPoint.X - i.Extents.MinPoint.X) / 2.0)
+                        : row.OrderByDescending(i => i.Extents.MinPoint.X + (i.Extents.MaxPoint.X - i.Extents.MinPoint.X) / 2.0);
+                    sortedList.AddRange(sortedRow);
+                }
+            }
+            else // TopToBottom or BottomToTop
+            {
+                // Group by Columns (Left-to-Right, then vertical sort)
+                // 1. Sort all items by X center ascending (left-to-right)
+                var xSorted = items.OrderBy(i => i.Extents.MinPoint.X + (i.Extents.MaxPoint.X - i.Extents.MinPoint.X) / 2.0).ToList();
+
+                List<List<BoundaryItem>> columns = new List<List<BoundaryItem>>();
+                foreach (var itemNode in xSorted)
+                {
+                    double itemX = itemNode.Extents.MinPoint.X + (itemNode.Extents.MaxPoint.X - itemNode.Extents.MinPoint.X) / 2.0;
+                    bool added = false;
+                    foreach (var col in columns)
+                    {
+                        double colX = col[0].Extents.MinPoint.X + (col[0].Extents.MaxPoint.X - col[0].Extents.MinPoint.X) / 2.0;
+                        if (Math.Abs(colX - itemX) < xTolerance)
+                        {
+                            col.Add(itemNode);
+                            added = true;
+                            break;
+                        }
+                    }
+                    if (!added)
+                    {
+                        columns.Add(new List<BoundaryItem> { itemNode });
+                    }
+                }
+
+                // Sort each column and concatenate
+                foreach (var col in columns)
+                {
+                    var sortedCol = (sortTag == "TopToBottom")
+                        ? col.OrderByDescending(i => i.Extents.MinPoint.Y + (i.Extents.MaxPoint.Y - i.Extents.MinPoint.Y) / 2.0)
+                        : col.OrderBy(i => i.Extents.MinPoint.Y + (i.Extents.MaxPoint.Y - i.Extents.MinPoint.Y) / 2.0);
+                    sortedList.AddRange(sortedCol);
+                }
+            }
+
+            _boundaryItems.Clear();
+            string docName = "";
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc != null)
+            {
+                docName = System.IO.Path.GetFileNameWithoutExtension(doc.Database.Filename);
+                if (string.IsNullOrEmpty(docName) || docName.StartsWith("Drawing"))
+                {
+                    docName = "FloorPlan";
+                }
+            }
+
+            for (int i = 0; i < sortedList.Count; i++)
+            {
+                var bi = sortedList[i];
+                bi.Index = i + 1;
+                
+                if (bi.FileName.StartsWith("FloorPlan_") || (docName != "" && bi.FileName.StartsWith(docName + "_")))
+                {
+                    bi.FileName = $"{docName}_{i + 1:D2}";
+                }
+                
+                _boundaryItems.Add(bi);
+            }
+        }
+
         private void btnDeleteRow_Click(object sender, RoutedEventArgs e)
         {
             if (sender is System.Windows.Controls.Button btn && btn.Tag is BoundaryItem item)
             {
-                RemoveBoundaryItem(item);
+                if (lstBoundaries.SelectedItems.Contains(item))
+                {
+                    List<BoundaryItem> itemsToRemove = new List<BoundaryItem>();
+                    foreach (var sel in lstBoundaries.SelectedItems)
+                    {
+                        if (sel is BoundaryItem bi) itemsToRemove.Add(bi);
+                    }
+                    RemoveBoundaryItems(itemsToRemove);
+                }
+                else
+                {
+                    RemoveBoundaryItems(new List<BoundaryItem> { item });
+                }
             }
         }
 
         private void lstBoundaries_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Delete && lstBoundaries.SelectedItem is BoundaryItem item)
+            if (e.Key == Key.Delete)
             {
-                RemoveBoundaryItem(item);
+                List<BoundaryItem> itemsToRemove = new List<BoundaryItem>();
+                foreach (var sel in lstBoundaries.SelectedItems)
+                {
+                    if (sel is BoundaryItem bi) itemsToRemove.Add(bi);
+                }
+                if (itemsToRemove.Count > 0)
+                {
+                    RemoveBoundaryItems(itemsToRemove);
+                }
             }
         }
 
-        private void RemoveBoundaryItem(BoundaryItem item)
+        private void RemoveBoundaryItems(List<BoundaryItem> items)
         {
-            _boundaryItems.Remove(item);
+            foreach (var item in items)
+            {
+                _boundaryItems.Remove(item);
+            }
 
             Document doc = Application.DocumentManager.MdiActiveDocument;
             string docName = "FloorPlan";
@@ -424,11 +643,13 @@ namespace SJ_CADtoRevit
                 var current = _boundaryItems[i];
                 current.Index = i + 1;
 
-                if (current.FileName.StartsWith(docName + "_"))
+                if (current.FileName.StartsWith("FloorPlan_") || (docName != "" && current.FileName.StartsWith(docName + "_")))
                 {
                     current.FileName = $"{docName}_{i + 1:D2}";
                 }
             }
+
+            ClearActiveTransient();
 
             if (_boundaryItems.Count > 0)
             {
@@ -466,7 +687,136 @@ namespace SJ_CADtoRevit
                 }
             }
 
-            Log($"[정보] 항목이 제거되었습니다. 남은 도곽 수: {_boundaryItems.Count}개");
+            Log($"[정보] {items.Count}개 항목이 제거되었습니다. 남은 도곽 수: {_boundaryItems.Count}개");
+        }
+
+        private Point _dragStartPoint;
+        private bool _isDraggingReady = false;
+
+        private void lstBoundaries_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            // Do not drag if clicking on TextBox or Button
+            DependencyObject dep = (DependencyObject)e.OriginalSource;
+            while (dep != null && dep != lstBoundaries)
+            {
+                if (dep is System.Windows.Controls.TextBox || dep is System.Windows.Controls.Button)
+                {
+                    _isDraggingReady = false;
+                    return;
+                }
+                dep = VisualTreeHelper.GetParent(dep);
+            }
+
+            _dragStartPoint = e.GetPosition(lstBoundaries);
+            _isDraggingReady = true;
+        }
+
+        private void lstBoundaries_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (e.LeftButton == MouseButtonState.Pressed && _isDraggingReady)
+            {
+                Point currentPosition = e.GetPosition(lstBoundaries);
+                Vector diff = _dragStartPoint - currentPosition;
+
+                // Only start drag if moved beyond system minimum drag distance
+                if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
+                    Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
+                {
+                    var item = GetObjectAtPoint<BoundaryItem>(lstBoundaries, _dragStartPoint);
+                    if (item != null)
+                    {
+                        _isDraggingReady = false; // Reset
+                        DragDrop.DoDragDrop(lstBoundaries, item, DragDropEffects.Move);
+                    }
+                }
+            }
+        }
+
+        private void lstBoundaries_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+        }
+
+        private void lstBoundaries_Drop(object sender, DragEventArgs e)
+        {
+            var droppedData = e.Data.GetData(typeof(BoundaryItem)) as BoundaryItem;
+            var targetData = GetObjectAtPoint<BoundaryItem>(lstBoundaries, e.GetPosition(lstBoundaries));
+
+            if (droppedData != null && targetData != null && droppedData != targetData)
+            {
+                int oldIndex = _boundaryItems.IndexOf(droppedData);
+                int newIndex = _boundaryItems.IndexOf(targetData);
+
+                if (oldIndex >= 0 && newIndex >= 0)
+                {
+                    _boundaryItems.Move(oldIndex, newIndex);
+
+                    string docName = "FloorPlan";
+                    Document doc = Application.DocumentManager.MdiActiveDocument;
+                    if (doc != null)
+                    {
+                        docName = System.IO.Path.GetFileNameWithoutExtension(doc.Database.Filename);
+                        if (string.IsNullOrEmpty(docName) || docName.StartsWith("Drawing"))
+                        {
+                            docName = "FloorPlan";
+                        }
+                    }
+
+                    for (int i = 0; i < _boundaryItems.Count; i++)
+                    {
+                        var bi = _boundaryItems[i];
+                        bi.Index = i + 1;
+                        
+                        if (bi.FileName.StartsWith("FloorPlan_") || (docName != "" && bi.FileName.StartsWith(docName + "_")))
+                        {
+                            bi.FileName = $"{docName}_{i + 1:D2}";
+                        }
+                    }
+                    
+                    Log($"[정렬] 도곽 순서 변경 완료: {oldIndex + 1}번 -> {newIndex + 1}번");
+                }
+            }
+        }
+
+        private T? GetObjectAtPoint<T>(System.Windows.Controls.ListView listView, Point point) where T : class
+        {
+            HitTestResult hit = VisualTreeHelper.HitTest(listView, point);
+            if (hit == null) return null;
+
+            DependencyObject? element = hit.VisualHit;
+            while (element != null && element != listView)
+            {
+                if (element is System.Windows.Controls.ListViewItem lvi)
+                {
+                    return lvi.DataContext as T;
+                }
+                element = VisualTreeHelper.GetParent(element);
+            }
+            return null;
+        }
+
+        private void btnReset_Click(object sender, RoutedEventArgs e)
+        {
+            _boundaryItems.Clear();
+            _referenceBoundaryId = ObjectId.Null;
+            ClearActiveTransient();
+
+            lblStatus.Text = "대기 중 (도곽 없음)";
+            lblStatus.Foreground = System.Windows.Media.Brushes.Orange;
+            btnExtract.IsEnabled = false;
+
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc != null)
+            {
+                try
+                {
+                    doc.Editor.SetImpliedSelection(new ObjectId[0]);
+                }
+                catch { }
+            }
+
+            Log("[정보] 도곽 목록이 초기화되었습니다.");
         }
 
         private void btnExtract_Click(object sender, RoutedEventArgs e)

@@ -1422,6 +1422,34 @@ namespace SJ_CADtoRevit
             return boundaryIds;
         }
 
+        private static void ZoomToExtents(Editor ed, Extents3d ext)
+        {
+            try
+            {
+                using (ViewTableRecord view = ed.GetCurrentView())
+                {
+                    Matrix3d wto = (Matrix3d.Rotation(-view.ViewTwist, view.ViewDirection, view.Target) *
+                                    Matrix3d.Displacement(view.Target - Point3d.Origin) *
+                                    Matrix3d.PlaneToWorld(view.ViewDirection)).Inverse();
+
+                    Extents3d tempExt = ext;
+                    tempExt.TransformBy(wto);
+
+                    double width = tempExt.MaxPoint.X - tempExt.MinPoint.X;
+                    double height = tempExt.MaxPoint.Y - tempExt.MinPoint.Y;
+                    Point2d center = new Point2d(tempExt.MinPoint.X + width / 2.0, tempExt.MinPoint.Y + height / 2.0);
+
+                    view.Height = height * 1.05; // 5% margin
+                    view.Width = width * 1.05;
+                    view.CenterPoint = center;
+
+                    ed.SetCurrentView(view);
+                }
+                ed.UpdateScreen();
+            }
+            catch { }
+        }
+
         /// <summary>
         /// 다중 도곽 DWG 추출 기능 (사용자 개별 저장 파일명 지정)
         /// </summary>
@@ -1482,20 +1510,41 @@ namespace SJ_CADtoRevit
                 // 무조건 좌측 하단 MinPoint를 Wblock BasePoint로 설정! (0,0 좌표 정렬 오류 해결)
                 Point3d basePoint = extents.MinPoint;
 
+                // Zoom to the boundary to bring its contents into viewport for visual feedback
+                ZoomToExtents(ed, extents);
+
                 Log($"[{i + 1}/{boundaryIds.Count}] 도곽 범위 내 객체 수집 중... 범위: Min={extents.MinPoint}, Max={extents.MaxPoint}");
                 
                 ObjectIdCollection idsToCopy = new ObjectIdCollection();
-                
-                PromptSelectionResult selRes = ed.SelectCrossingWindow(extents.MinPoint, extents.MaxPoint);
-                if (selRes.Status == PromptStatus.OK && selRes.Value != null)
+
+                // 100% Reliable Database-Level Selection (Bypasses viewport/graphics engine visibility limit)
+                using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    foreach (SelectedObject selObj in selRes.Value)
+                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                    
+                    foreach (ObjectId entId in ms)
                     {
-                        if (selObj.ObjectId.IsValid)
+                        if (entId == boundaryId)
                         {
-                            idsToCopy.Add(selObj.ObjectId);
+                            idsToCopy.Add(entId);
+                            continue;
                         }
+                        
+                        Entity ent = (Entity)tr.GetObject(entId, OpenMode.ForRead);
+                        try
+                        {
+                            Extents3d entExt = ent.GeometricExtents;
+                            // Check if entity extents overlap with boundary extents
+                            if (!(entExt.MinPoint.X > extents.MaxPoint.X || entExt.MaxPoint.X < extents.MinPoint.X ||
+                                  entExt.MinPoint.Y > extents.MaxPoint.Y || entExt.MaxPoint.Y < extents.MinPoint.Y))
+                            {
+                                idsToCopy.Add(entId);
+                            }
+                        }
+                        catch { }
                     }
+                    tr.Commit();
                 }
 
                 if (idsToCopy.Count == 0)
